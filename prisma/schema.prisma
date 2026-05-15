@@ -1,0 +1,249 @@
+// NorthStar — Prisma Schema (PostgreSQL / Neon)
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ── Enums ──────────────────────────────────────────────────────────────────
+
+enum Role {
+  executive
+  manager
+  employee
+}
+
+enum ProjectHealth {
+  healthy
+  at_risk  // stored as "at-risk" via @map
+  blocked
+
+  @@map("project_health")
+}
+
+enum ProjectRisk {
+  low
+  medium
+  high
+  critical
+
+  @@map("project_risk")
+}
+
+enum Severity {
+  low
+  medium
+  high
+  critical
+}
+
+enum BlockerStatus {
+  open
+  in_progress  // stored as "in-progress" via @map
+  resolved
+
+  @@map("blocker_status")
+}
+
+enum InsightSeverity {
+  info
+  medium
+  high
+  critical
+}
+
+enum MessageRole {
+  user
+  ai
+}
+
+enum ActivityType {
+  update
+  alert
+  blocker
+  ai
+  resolved
+}
+
+// ── Models ─────────────────────────────────────────────────────────────────
+
+model User {
+  id         String   @id @default(cuid())
+  name       String
+  email      String   @unique
+  password   String
+  role       Role
+  title      String
+  department String
+  avatar     String
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  managedProjects  Project[]        @relation("ProjectManager")
+  memberProjects   ProjectMember[]
+  updates          Update[]
+  reportedBlockers Blocker[]        @relation("BlockerReporter")
+  activityFeed     ActivityFeed[]
+
+  @@index([email])
+  @@index([role])
+  @@index([department])
+  @@map("users")
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  managerId   String        @map("manager_id")
+  health      ProjectHealth @default(healthy)
+  progress    Int           @default(0)
+  risk        ProjectRisk   @default(low)
+  blockers    Int           @default(0)
+  department  String
+  deadline    DateTime?
+  morale      Int           @default(70)
+  tags        String[]      @default([])
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  manager         User                    @relation("ProjectManager", fields: [managerId], references: [id])
+  members         ProjectMember[]
+  updates         Update[]
+  blockerList     Blocker[]
+  insights        AiInsight[]
+  activityFeed    ActivityFeed[]
+  progressHistory ProjectProgressHistory[]
+
+  @@index([health])
+  @@index([risk])
+  @@index([department])
+  @@index([managerId])
+  @@map("projects")
+}
+
+model ProjectMember {
+  projectId String  @map("project_id")
+  userId    String  @map("user_id")
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@map("project_members")
+}
+
+model Update {
+  id               String   @id @default(cuid())
+  projectId        String   @map("project_id")
+  userId           String   @map("user_id")
+  signals          String[] @default([])
+  extractedMetrics Json     @default("{}") @map("extracted_metrics")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id])
+  messages Message[]
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([createdAt(sort: Desc)])
+  @@map("updates")
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  updateId  String      @map("update_id")
+  role      MessageRole
+  content   String
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  update Update @relation(fields: [updateId], references: [id], onDelete: Cascade)
+
+  @@index([updateId])
+  @@map("messages")
+}
+
+model Blocker {
+  id          String        @id @default(cuid())
+  projectId   String        @map("project_id")
+  reportedBy  String        @map("reported_by")
+  title       String
+  description String?
+  severity    Severity      @default(medium)
+  status      BlockerStatus @default(open)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  resolvedAt  DateTime?     @map("resolved_at")
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reporter User    @relation("BlockerReporter", fields: [reportedBy], references: [id])
+
+  @@index([projectId])
+  @@index([status])
+  @@index([severity])
+  @@map("blockers")
+}
+
+model AiInsight {
+  id        String          @id @default(cuid())
+  projectId String?         @map("project_id")
+  severity  InsightSeverity
+  message   String
+  icon      String          @default("🔵")
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([severity])
+  @@map("ai_insights")
+}
+
+model ActivityFeed {
+  id        String       @id @default(cuid())
+  userId    String?      @map("user_id")
+  action    String
+  projectId String?      @map("project_id")
+  type      ActivityType @default(update)
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  user    User?    @relation(fields: [userId], references: [id])
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([createdAt(sort: Desc)])
+  @@map("activity_feed")
+}
+
+model MoraleHistory {
+  id         String   @id @default(cuid())
+  department String
+  score      Int
+  weekLabel  String   @map("week_label")
+  recordedAt DateTime @default(now()) @map("recorded_at")
+
+  @@index([department, weekLabel])
+  @@map("morale_history")
+}
+
+model ProjectProgressHistory {
+  id         String   @id @default(cuid())
+  projectId  String   @map("project_id")
+  progress   Int
+  weekLabel  String   @map("week_label")
+  recordedAt DateTime @default(now()) @map("recorded_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, weekLabel])
+  @@map("project_progress_history")
+}

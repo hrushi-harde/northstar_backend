@@ -1,0 +1,11 @@
+node_modules/
+.env
+
+# SQLite (legacy — no longer used)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Prisma generated client
+src/generated/
