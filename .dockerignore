@@ -1,0 +1,41 @@
+# Dependencies — reinstalled inside the image
+node_modules/
+
+# Environment files — secrets must be injected at runtime, never baked in
+.env
+.env.*
+!.env.example
+
+# SQLite legacy data files (not used in production — Neon PostgreSQL is used)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Prisma generated client — regenerated during docker build via postinstall
+src/generated/
+
+# Git
+.git/
+.gitignore
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Dev tooling
+nodemon.json
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+
+# Docs
+README.md
+MIGRATION.md

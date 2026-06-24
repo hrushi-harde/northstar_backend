@@ -1,0 +1,65 @@
+name: Backend — Build & Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/northstar-backend
+
+jobs:
+  build-and-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout code ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Docker Buildx (enables multi-platform & cache support) ─
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── 3. Log in to Docker Hub ─────────────────────────────────────────
+      #       Only runs on push to main (not on PRs — PRs just build/validate)
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── 4. Extract metadata (tags & labels) ─────────────────────────────
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
+
+      # ── 5. Build & Push ──────────────────────────────────────────────────
+      #       On PRs: builds only (no push) — acts as a build-validation check
+      #       On main push: builds + pushes both :latest and :sha-<short>
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          dockerfile: Dockerfile
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions cache speeds up subsequent builds significantly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── 6. Image digest summary ──────────────────────────────────────────
+      - name: Print image digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "Pushed image digest ${{ steps.meta.outputs.digest }}"
