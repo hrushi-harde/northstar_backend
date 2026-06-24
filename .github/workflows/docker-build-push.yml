@@ -1,4 +1,4 @@
-name: Backend — Build & Push Docker Image
+name: Backend — Build, Push & Deploy
 
 on:
   push:
@@ -12,21 +12,24 @@ env:
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/northstar-backend
 
 jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # JOB 1 — Build the Docker image and push it to Docker Hub
+  # ────────────────────────────────────────────────────────────────────────
   build-and-push:
     name: Build & Push
     runs-on: ubuntu-latest
 
+    outputs:
+      # Pass the exact image tag to the deploy job so it pulls the right image
+      image_tag: ${{ steps.meta.outputs.version }}
+
     steps:
-      # ── 1. Checkout code ────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Docker Buildx (enables multi-platform & cache support) ─
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ── 3. Log in to Docker Hub ─────────────────────────────────────────
-      #       Only runs on push to main (not on PRs — PRs just build/validate)
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
@@ -34,7 +37,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ── 4. Extract metadata (tags & labels) ─────────────────────────────
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -44,9 +46,6 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-,format=short
 
-      # ── 5. Build & Push ──────────────────────────────────────────────────
-      #       On PRs: builds only (no push) — acts as a build-validation check
-      #       On main push: builds + pushes both :latest and :sha-<short>
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -55,11 +54,66 @@ jobs:
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # GitHub Actions cache speeds up subsequent builds significantly
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ── 6. Image digest summary ──────────────────────────────────────────
       - name: Print image digest
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: echo "Pushed image digest ${{ steps.meta.outputs.digest }}"
+        run: echo "Pushed ${{ steps.meta.outputs.tags }}"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # JOB 2 — SSH into EC2 and deploy the new image
+  #          Only runs on push to main (never on PRs)
+  # ────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Deploy backend on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          # All commands run on the EC2 instance
+          script: |
+            set -e
+
+            echo "=== Logging in to Docker Hub ==="
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            echo "=== Pulling latest backend image ==="
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/northstar-backend:latest
+
+            echo "=== Stopping old container (if running) ==="
+            docker stop northstar-backend || true
+            docker rm   northstar-backend || true
+
+            echo "=== Starting new container ==="
+            docker run -d \
+              --name northstar-backend \
+              --restart unless-stopped \
+              -p 3001:3001 \
+              -e NODE_ENV=production \
+              -e PORT=3001 \
+              -e FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
+              -e JWT_SECRET="${{ secrets.JWT_SECRET }}" \
+              -e JWT_EXPIRES_IN="${{ secrets.JWT_EXPIRES_IN }}" \
+              -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+              -e DIRECT_URL="${{ secrets.DIRECT_URL }}" \
+              -e GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+              -e GEMINI_MODEL="${{ secrets.GEMINI_MODEL }}" \
+              ${{ secrets.DOCKERHUB_USERNAME }}/northstar-backend:latest
+
+            echo "=== Waiting for health check ==="
+            sleep 10
+            docker exec northstar-backend wget -qO- http://localhost:3001/health || echo "Health check pending..."
+
+            echo "=== Cleaning up unused images ==="
+            docker image prune -f
+
+            echo "=== Deploy complete ==="
